@@ -4,4 +4,4 @@ requests==2.31.0
 beautifulsoup4==4.13.0
 lxml==4.9.3
 scrapy==2.12.0
-scrapy-playwright==0.0.1
+scrapy-playwright>=0.0.26

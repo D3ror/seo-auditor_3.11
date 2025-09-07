@@ -1,5 +1,6 @@
 # Core crawling & parsing
 scrapy>=2.11
+playwright>=1.46
 scrapy-playwright>=0.0.26
 httpx>=0.27
 aiohttp>=3.9

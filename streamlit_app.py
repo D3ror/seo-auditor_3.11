@@ -34,17 +34,16 @@ preview_cols = [
     "duplicate_h1",
 ]
 
-# Helper: Highlight SEO issues
+# Helper: Highlight SEO issues with semi-transparent colors
 def highlight_issues(val, colname):
-    if colname == "status":
-        if val != 200:
-            return "background-color: #ffcccc"  # red
-    if colname in ("duplicate_title", "duplicate_h1"):
-        if val:
-            return "background-color: #ffe6b3"  # orange
-    if colname in ("canonical", "robots_meta"):
-        if pd.isna(val) or val == "":
-            return "background-color: #ffffcc"  # yellow
+    if colname == "status" and val != 200:
+        return "background-color: rgba(255, 0, 0, 0.1)"  # faint red
+    if colname == "duplicate_title" and val:
+        return "background-color: rgba(255, 165, 0, 0.1)"  # faint orange
+    if colname == "duplicate_h1" and val:
+        return "background-color: rgba(255, 165, 0, 0.1)"  # faint orange
+    if colname in ("canonical", "robots_meta") and (pd.isna(val) or val == ""):
+        return "background-color: rgba(255, 255, 0, 0.1)"  # faint yellow
     return ""
 
 def styled_dataframe(df):
@@ -69,7 +68,6 @@ if results_path.exists():
             st.warning("No results parsed from last crawl.")
         else:
             st.dataframe(df)
-
             existing_cols = [c for c in preview_cols if c in df.columns]
             if existing_cols:
                 st.subheader("SEO Signals (Preview with highlights)")
@@ -108,7 +106,6 @@ if results_path.exists():
                         st.error(f"Could not export to Google Sheets: {e}")
                 else:
                     st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
-
     except Exception as e:
         st.error(f"Could not read results.csv: {e}")
 
@@ -150,9 +147,9 @@ if run_clicked:
             # 3) Monitor progress
             progress = st.progress(0)
             log_box = st.empty()
-            wait_seconds = 600
             row_count = 0
             stable_ticks = 0
+            wait_seconds = 600
 
             status.write("Crawling… this may take a while.")
             for i in range(wait_seconds):

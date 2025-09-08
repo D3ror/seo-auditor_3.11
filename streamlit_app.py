@@ -67,7 +67,7 @@ if run_clicked:
             try:
                 subprocess.Popen(
                     [
-                        sys.executable, "-m", "scrapy", "crawl", "options",
+                        sys.executable, "-m", "scrapy", "crawl", "seo",
                         "-a", f"start_url={domain}",
                         "-O", str(results_path),
                     ],

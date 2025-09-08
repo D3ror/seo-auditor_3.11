@@ -5,6 +5,9 @@ import time
 from urllib.parse import urlparse
 import sys
 import subprocess
+import json
+
+st.set_page_config(page_title="SEO Crawl & Indexability Auditor", layout="wide")
 
 st.title("SEO Crawl & Indexability Auditor")
 
@@ -15,8 +18,47 @@ out_dir = pathlib.Path("out")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 results_path = out_dir / "results.csv"
-log_path = out_dir / "runner.log"   # crawler logs
-error_path = out_dir / "error.log"  # crawler errors
+log_path = out_dir / "runner.log"
+error_path = out_dir / "error.log"
+
+# Columns we care about for SEO preview
+preview_cols = [
+    "url",
+    "status",
+    "title",
+    "h1",
+    "canonical",
+    "robots_meta",
+    "hreflang_count",
+    "duplicate_title",
+    "duplicate_h1",
+]
+
+# Helper: Highlight SEO issues
+def highlight_issues(val, colname):
+    if colname == "status":
+        if val != 200:
+            return "background-color: #ffcccc"  # red
+    if colname in ("duplicate_title", "duplicate_h1"):
+        if val:
+            return "background-color: #ffe6b3"  # orange
+    if colname in ("canonical", "robots_meta"):
+        if pd.isna(val) or val == "":
+            return "background-color: #ffffcc"  # yellow
+    return ""
+
+def styled_dataframe(df):
+    return df.style.applymap(
+        lambda v: highlight_issues(v, "status"), subset=["status"]
+    ).applymap(
+        lambda v: highlight_issues(v, "duplicate_title"), subset=["duplicate_title"]
+    ).applymap(
+        lambda v: highlight_issues(v, "duplicate_h1"), subset=["duplicate_h1"]
+    ).applymap(
+        lambda v: highlight_issues(v, "canonical"), subset=["canonical"]
+    ).applymap(
+        lambda v: highlight_issues(v, "robots_meta"), subset=["robots_meta"]
+    )
 
 # Show latest results if available
 if results_path.exists():
@@ -25,35 +67,57 @@ if results_path.exists():
         df = pd.read_csv(results_path)
         st.dataframe(df)
 
-        # 🔎 Preview SEO-specific fields (if present)
-        preview_cols = [
-            "url",
-            "status",
-            "title",
-            "h1",
-            "canonical",
-            "robots_meta",
-            "hreflang_count",
-            "duplicate_title",
-            "duplicate_h1",
-        ]
         existing_cols = [c for c in preview_cols if c in df.columns]
         if existing_cols:
-            st.subheader("SEO Signals (Preview)")
-            st.dataframe(df[existing_cols].head(50))
+            st.subheader("SEO Signals (Preview with highlights)")
+            st.dataframe(styled_dataframe(df[existing_cols].head(50)))
 
+            # Download buttons
             st.download_button(
-                "Download SEO results (CSV)",
+                "Download CSV",
                 data=df.to_csv(index=False).encode("utf-8"),
                 file_name="seo_audit_results.csv",
                 mime="text/csv",
             )
+            st.download_button(
+                "Download JSON",
+                data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                file_name="seo_audit_results.json",
+                mime="application/json",
+            )
+
+            # Google Sheets export (if secrets available)
+            if "gcp_service_account" in st.secrets:
+                try:
+                    import gspread
+                    from google.oauth2.service_account import Credentials
+
+                    creds = Credentials.from_service_account_info(
+                        st.secrets["gcp_service_account"],
+                        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                    )
+                    client = gspread.authorize(creds)
+                    sheet = client.create("SEO Audit Results")
+                    worksheet = sheet.get_worksheet(0)
+                    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+                    st.success(f"Exported to Google Sheets: {sheet.url}")
+                except Exception as e:
+                    st.error(f"Could not export to Google Sheets: {e}")
+            else:
+                st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
+
     except Exception as e:
         st.error(f"Could not read results.csv: {e}")
 
 if run_clicked:
     with st.status("Preparing to crawl…", expanded=True) as status:
         try:
+            # Reset logs at the start of each crawl
+            log_path.write_text("")
+            error_path.write_text("")
+            if results_path.exists():
+                results_path.unlink()  # remove old results for clean run
+
             # 1) Validate input
             status.write("Validating input…")
             parsed = urlparse(domain.strip())
@@ -61,13 +125,12 @@ if run_clicked:
                 status.update(label="Invalid URL. Please include https://", state="error")
                 st.stop()
 
-            # 2) Launch your crawler here
+            # 2) Launch crawler
             status.write("Launching crawler…")
-
             try:
                 subprocess.Popen(
                     [
-                        sys.executable, "-m", "scrapy", "crawl", "seo",
+                        sys.executable, "-m", "scrapy", "crawl", "options",
                         "-a", f"start_url={domain}",
                         "-O", str(results_path),
                     ],
@@ -76,10 +139,7 @@ if run_clicked:
                 )
             except FileNotFoundError:
                 status.update(label="Cannot start crawler", state="error")
-                st.error(
-                    "Scrapy is not available in this Python environment.\n"
-                    "Install it into the same env and restart Streamlit, or run Streamlit from the env."
-                )
+                st.error("Scrapy is not available in this environment.")
                 st.code("pip install scrapy scrapy-playwright")
                 st.stop()
 
@@ -101,15 +161,10 @@ if run_clicked:
                         pass
 
                 if error_path.exists() and error_path.stat().st_size > 0:
-                    try:
-                        err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
-                        status.update(label="Crawler reported an error", state="error")
-                        st.error(err_txt.strip() or "Unknown error. See error log.")
-                        st.stop()
-                    except Exception:
-                        status.update(label="Crawler reported an error", state="error")
-                        st.error("An error occurred. See out/error.log.")
-                        st.stop()
+                    err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
+                    status.update(label="Crawler reported an error", state="error")
+                    st.error(err_txt.strip() or "Unknown error. See error log.")
+                    st.stop()
 
                 if results_path.exists():
                     size = results_path.stat().st_size
@@ -136,17 +191,23 @@ if run_clicked:
             st.subheader("Crawl results")
             st.dataframe(df)
 
-            # 🔎 Show SEO signals if available
             existing_cols = [c for c in preview_cols if c in df.columns]
             if existing_cols:
-                st.subheader("SEO Signals (Preview)")
-                st.dataframe(df[existing_cols].head(50))
+                st.subheader("SEO Signals (Preview with highlights)")
+                st.dataframe(styled_dataframe(df[existing_cols].head(50)))
 
+                # Download buttons
                 st.download_button(
-                    "Download SEO results (CSV)",
+                    "Download CSV",
                     data=df.to_csv(index=False).encode("utf-8"),
                     file_name="seo_audit_results.csv",
                     mime="text/csv",
+                )
+                st.download_button(
+                    "Download JSON",
+                    data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                    file_name="seo_audit_results.json",
+                    mime="application/json",
                 )
 
             progress.progress(100)

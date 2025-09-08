@@ -65,130 +65,9 @@ if results_path.exists():
     st.subheader("Latest results")
     try:
         df = pd.read_csv(results_path)
-        st.dataframe(df)
-
-        existing_cols = [c for c in preview_cols if c in df.columns]
-        if existing_cols:
-            st.subheader("SEO Signals (Preview with highlights)")
-            st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-
-            # Download buttons
-            st.download_button(
-                "Download CSV",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name="seo_audit_results.csv",
-                mime="text/csv",
-            )
-            st.download_button(
-                "Download JSON",
-                data=df.to_json(orient="records", indent=2).encode("utf-8"),
-                file_name="seo_audit_results.json",
-                mime="application/json",
-            )
-
-            # Google Sheets export (if secrets available)
-            if "gcp_service_account" in st.secrets:
-                try:
-                    import gspread
-                    from google.oauth2.service_account import Credentials
-
-                    creds = Credentials.from_service_account_info(
-                        st.secrets["gcp_service_account"],
-                        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                    )
-                    client = gspread.authorize(creds)
-                    sheet = client.create("SEO Audit Results")
-                    worksheet = sheet.get_worksheet(0)
-                    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-                    st.success(f"Exported to Google Sheets: {sheet.url}")
-                except Exception as e:
-                    st.error(f"Could not export to Google Sheets: {e}")
-            else:
-                st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
-
-    except Exception as e:
-        st.error(f"Could not read results.csv: {e}")
-
-if run_clicked:
-    with st.status("Preparing to crawl…", expanded=True) as status:
-        try:
-            # Reset logs at the start of each crawl
-            log_path.write_text("")
-            error_path.write_text("")
-            if results_path.exists():
-                results_path.unlink()  # remove old results for clean run
-
-            # 1) Validate input
-            status.write("Validating input…")
-            parsed = urlparse(domain.strip())
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                status.update(label="Invalid URL. Please include https://", state="error")
-                st.stop()
-
-            # 2) Launch crawler
-            status.write("Launching crawler…")
-            try:
-                subprocess.Popen(
-                    [
-                        sys.executable, "-m", "scrapy", "crawl", "options",
-                        "-a", f"start_url={domain}",
-                        "-O", str(results_path),
-                    ],
-                    stdout=open(log_path, "a", encoding="utf-8"),
-                    stderr=open(error_path, "a", encoding="utf-8"),
-                )
-            except FileNotFoundError:
-                status.update(label="Cannot start crawler", state="error")
-                st.error("Scrapy is not available in this environment.")
-                st.code("pip install scrapy scrapy-playwright")
-                st.stop()
-
-            # 3) Monitor progress
-            progress = st.progress(0)
-            log_box = st.empty()
-            wait_seconds = 600
-            last_size = -1
-            stable_ticks = 0
-
-            status.write("Crawling… this may take a while.")
-            for i in range(wait_seconds):
-                if log_path.exists():
-                    try:
-                        with log_path.open("r", encoding="utf-8", errors="ignore") as f:
-                            tail = f.readlines()[-12:]
-                        log_box.code("".join(tail), language="text")
-                    except Exception:
-                        pass
-
-                if error_path.exists() and error_path.stat().st_size > 0:
-                    err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
-                    status.update(label="Crawler reported an error", state="error")
-                    st.error(err_txt.strip() or "Unknown error. See error log.")
-                    st.stop()
-
-                if results_path.exists():
-                    size = results_path.stat().st_size
-                    if size == last_size:
-                        stable_ticks += 1
-                    else:
-                        stable_ticks = 0
-                    last_size = size
-
-                    if stable_ticks >= 2:
-                        break
-
-                pct = min(100, int((i / wait_seconds) * 100))
-                progress.progress(pct)
-                time.sleep(1)
-            else:
-                status.update(label="Timed out waiting for results.", state="error")
-                st.error("Timed out waiting for out/results.csv. Check logs.")
-                st.stop()
-
-            # 4) Load and show results
-            status.write("Loading results…")
-            df = pd.read_csv(results_path)
-            st.subheader("Crawl results")
+        if df.empty:
+            st.warning("No results parsed from last crawl.")
+        else:
             st.dataframe(df)
 
             existing_cols = [c for c in preview_cols if c in df.columns]
@@ -210,8 +89,149 @@ if run_clicked:
                     mime="application/json",
                 )
 
-            progress.progress(100)
-            status.update(label="Crawl complete", state="complete")
+                # Google Sheets export (if secrets available)
+                if "gcp_service_account" in st.secrets:
+                    try:
+                        import gspread
+                        from google.oauth2.service_account import Credentials
+
+                        creds = Credentials.from_service_account_info(
+                            st.secrets["gcp_service_account"],
+                            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                        )
+                        client = gspread.authorize(creds)
+                        sheet = client.create("SEO Audit Results")
+                        worksheet = sheet.get_worksheet(0)
+                        worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+                        st.success(f"Exported to Google Sheets: {sheet.url}")
+                    except Exception as e:
+                        st.error(f"Could not export to Google Sheets: {e}")
+                else:
+                    st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
+
+    except Exception as e:
+        st.error(f"Could not read results.csv: {e}")
+
+if run_clicked:
+    with st.status("Preparing to crawl…", expanded=True) as status:
+        try:
+            # Reset logs and results
+            log_path.write_text("")
+            error_path.write_text("")
+            if results_path.exists():
+                results_path.unlink()
+
+            # 1) Validate input
+            status.write("Validating input…")
+            parsed = urlparse(domain.strip())
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                status.update(label="Invalid URL. Please include https://", state="error")
+                st.stop()
+
+            # 2) Launch crawler
+            status.write("Launching crawler…")
+            try:
+                subprocess.Popen(
+                    [
+                        sys.executable, "-m", "scrapy", "crawl", "options",
+                        "-a", f"start_url={domain}",
+                        "-O", str(results_path),
+                        "-L", "WARNING",  # suppress startup chatter
+                    ],
+                    stdout=open(log_path, "a", encoding="utf-8"),
+                    stderr=open(error_path, "a", encoding="utf-8"),
+                )
+            except FileNotFoundError:
+                status.update(label="Cannot start crawler", state="error")
+                st.error("Scrapy is not available in this environment.")
+                st.code("pip install scrapy scrapy-playwright")
+                st.stop()
+
+            # 3) Monitor progress
+            progress = st.progress(0)
+            log_box = st.empty()
+            wait_seconds = 600
+            row_count = 0
+            stable_ticks = 0
+
+            status.write("Crawling… this may take a while.")
+            for i in range(wait_seconds):
+                # Show logs
+                if log_path.exists():
+                    try:
+                        with log_path.open("r", encoding="utf-8", errors="ignore") as f:
+                            tail = f.readlines()[-12:]
+                        log_box.code("".join(tail), language="text")
+                    except Exception:
+                        pass
+
+                # Show errors if crawl fails
+                if error_path.exists() and error_path.stat().st_size > 0:
+                    err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
+                    status.update(label="Crawler reported an error", state="error")
+                    st.error(err_txt.strip() or "Unknown error. See error log.")
+                    st.stop()
+
+                # Track progress via results
+                if results_path.exists():
+                    try:
+                        df = pd.read_csv(results_path)
+                        new_rows = len(df)
+                        if new_rows > row_count:
+                            row_count = new_rows
+                            stable_ticks = 0
+                        else:
+                            stable_ticks += 1
+
+                        pct = min(100, max(5, row_count))
+                        progress.progress(pct)
+                    except Exception:
+                        pass
+
+                    if stable_ticks >= 3:
+                        break
+
+                time.sleep(1)
+            else:
+                status.update(label="Timed out waiting for results.", state="error")
+                st.error("Timed out waiting for out/results.csv. Check logs.")
+                st.stop()
+
+            # 4) Load and show results
+            status.write("Loading results…")
+            try:
+                df = pd.read_csv(results_path)
+                if df.empty:
+                    st.warning("Crawl completed but no results were parsed.")
+                else:
+                    st.subheader("Crawl results")
+                    st.dataframe(df)
+
+                    existing_cols = [c for c in preview_cols if c in df.columns]
+                    if existing_cols:
+                        st.subheader("SEO Signals (Preview with highlights)")
+                        st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+
+                        # Download buttons
+                        st.download_button(
+                            "Download CSV",
+                            data=df.to_csv(index=False).encode("utf-8"),
+                            file_name="seo_audit_results.csv",
+                            mime="text/csv",
+                        )
+                        st.download_button(
+                            "Download JSON",
+                            data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                            file_name="seo_audit_results.json",
+                            mime="application/json",
+                        )
+
+                progress.progress(100)
+                status.update(label="Crawl complete", state="complete")
+
+            except Exception:
+                st.error("Crawl completed but results file could not be parsed.")
+
         except Exception as e:
             status.update(label="An unexpected error occurred", state="error")
             st.exception(e)

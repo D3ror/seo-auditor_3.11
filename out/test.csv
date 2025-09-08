@@ -1,0 +1,18 @@
+url,status,robots_txt
+https://www.cutslicemarketing.com/robots.txt,200,"# START YOAST BLOCK
+# ---------------------------
+User-agent: *
+Disallow:
+
+Sitemap: https://www.cutslicemarketing.com/sitemap_index.xml
+# ---------------------------
+# END YOAST BLOCK"
+https://www.cutslicemarketing.com/,200,
+https://www.cutslicemarketing.com/ota-yhteytta/,200,
+https://www.cutslicemarketing.com/en/,200,
+https://www.cutslicemarketing.com/yritys/,200,
+https://www.cutslicemarketing.com/,200,
+https://www.cutslicemarketing.com/palvelut/,200,
+https://www.cutslicemarketing.com/en/ota-yhteytta/,200,
+https://www.cutslicemarketing.com/en/yritys/,200,
+https://www.cutslicemarketing.com/en/palvelut/,200,

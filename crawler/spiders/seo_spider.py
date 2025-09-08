@@ -1,13 +1,13 @@
 import scrapy
 import tldextract
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from scrapy.http import Request
 
 
 class OptionsSpider(scrapy.Spider):
     """
     Usage:
-      scrapy crawl seo -a start_url=https://example.com -O out/results.json
+      scrapy crawl seo -a start_url=https://example.com -O out/results.csv
     """
     name = "seo"
 
@@ -41,7 +41,8 @@ class OptionsSpider(scrapy.Spider):
 
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
-            yield response.follow(loc, callback=self.parse_page)
+            if loc.startswith("http"):  # only follow valid URLs
+                yield response.follow(loc, callback=self.parse_page)
 
     def parse_page(self, response):
         # Extract SEO signals
@@ -69,8 +70,11 @@ class OptionsSpider(scrapy.Spider):
             "duplicate_h1": duplicate_h1,
         }
 
-        # Follow internal links
+        # Follow internal links safely
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
-            if self.allowed_domain in abs_url:
+            parsed = urlparse(abs_url)
+
+            # Only follow http/https and skip mailto:, tel:, javascript:, etc.
+            if parsed.scheme in ("http", "https") and self.allowed_domain in abs_url:
                 yield response.follow(abs_url, callback=self.parse_page)

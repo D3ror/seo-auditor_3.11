@@ -1,4 +1,4 @@
-BOT_NAME = "crawler"
+BOT_NAME = "options"
 SPIDER_MODULES = ["crawler.spiders"]
 NEWSPIDER_MODULE = "crawler.spiders"
 

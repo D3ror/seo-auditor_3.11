@@ -3,6 +3,8 @@ import pandas as pd
 import pathlib
 import time
 from urllib.parse import urlparse
+import sys
+import subprocess
 
 st.title("SEO Crawl & Indexability Auditor")
 
@@ -13,15 +15,42 @@ out_dir = pathlib.Path("out")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 results_path = out_dir / "results.csv"
-log_path = out_dir / "runner.log" # optional: have your crawler write logs here
-error_path = out_dir / "error.log" # optional: have your crawler write errors here
+log_path = out_dir / "runner.log"   # crawler logs
+error_path = out_dir / "error.log"  # crawler errors
+
 # Show latest results if available
 if results_path.exists():
     st.subheader("Latest results")
     try:
-        st.dataframe(pd.read_csv(results_path))
+        df = pd.read_csv(results_path)
+        st.dataframe(df)
+
+        # 🔎 Preview SEO-specific fields (if present)
+        preview_cols = [
+            "url",
+            "status",
+            "title",
+            "h1",
+            "canonical",
+            "robots_meta",
+            "hreflang_count",
+            "duplicate_title",
+            "duplicate_h1",
+        ]
+        existing_cols = [c for c in preview_cols if c in df.columns]
+        if existing_cols:
+            st.subheader("SEO Signals (Preview)")
+            st.dataframe(df[existing_cols].head(50))
+
+            st.download_button(
+                "Download SEO results (CSV)",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name="seo_audit_results.csv",
+                mime="text/csv",
+            )
     except Exception as e:
-        st.error(f"Could not read results.csv: {e}")    
+        st.error(f"Could not read results.csv: {e}")
+
 if run_clicked:
     with st.status("Preparing to crawl…", expanded=True) as status:
         try:
@@ -33,8 +62,6 @@ if run_clicked:
                 st.stop()
 
             # 2) Launch your crawler here
-            import sys
-            import subprocess
             status.write("Launching crawler…")
 
             try:
@@ -55,6 +82,7 @@ if run_clicked:
                 )
                 st.code("pip install scrapy scrapy-playwright")
                 st.stop()
+
             # 3) Monitor progress
             progress = st.progress(0)
             log_box = st.empty()
@@ -102,11 +130,25 @@ if run_clicked:
                 st.error("Timed out waiting for out/results.csv. Check logs.")
                 st.stop()
 
-            # 4) Load and show results  ✅ moved INSIDE the with-block
+            # 4) Load and show results
             status.write("Loading results…")
             df = pd.read_csv(results_path)
             st.subheader("Crawl results")
             st.dataframe(df)
+
+            # 🔎 Show SEO signals if available
+            existing_cols = [c for c in preview_cols if c in df.columns]
+            if existing_cols:
+                st.subheader("SEO Signals (Preview)")
+                st.dataframe(df[existing_cols].head(50))
+
+                st.download_button(
+                    "Download SEO results (CSV)",
+                    data=df.to_csv(index=False).encode("utf-8"),
+                    file_name="seo_audit_results.csv",
+                    mime="text/csv",
+                )
+
             progress.progress(100)
             status.update(label="Crawl complete", state="complete")
         except Exception as e:

@@ -1,7 +1,9 @@
 import scrapy
 import tldextract
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from scrapy.http import Request
+import csv
+import pathlib
 
 
 class OptionsSpider(scrapy.Spider):
@@ -19,6 +21,7 @@ class OptionsSpider(scrapy.Spider):
         self.allowed_domain = tldextract.extract(start_url).registered_domain
         self.visited_titles = set()
         self.visited_h1s = set()
+        self.items_scraped = 0  # <-- track if any results were scraped
 
     def start_requests(self):
         # Crawl homepage
@@ -33,31 +36,31 @@ class OptionsSpider(scrapy.Spider):
         yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True)
 
     def parse_robots(self, response):
+        self.items_scraped += 1
         yield {
             "url": response.url,
             "status": response.status,
-            "robots_txt": response.text[:5000],  # store first 5k chars
+            "robots_txt": response.text[:5000],
         }
 
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
-            if loc.startswith("http"):  # only follow valid URLs
-                yield response.follow(loc, callback=self.parse_page)
+            self.items_scraped += 1
+            yield response.follow(loc, callback=self.parse_page)
 
     def parse_page(self, response):
-        # Extract SEO signals
         title = response.css("title::text").get(default="").strip()
         h1 = response.css("h1::text").get(default="").strip()
         canonical = response.css("link[rel=canonical]::attr(href)").get()
         robots_meta = ",".join(response.css("meta[name=robots]::attr(content)").getall())
         hreflangs = response.css("link[rel=alternate][hreflang]::attr(hreflang)").getall()
 
-        # Track duplicates
         duplicate_title = title in self.visited_titles
         duplicate_h1 = h1 in self.visited_h1s
         self.visited_titles.add(title)
         self.visited_h1s.add(h1)
 
+        self.items_scraped += 1
         yield {
             "url": response.url,
             "status": response.status,
@@ -70,11 +73,18 @@ class OptionsSpider(scrapy.Spider):
             "duplicate_h1": duplicate_h1,
         }
 
-        # Follow internal links safely
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
-            parsed = urlparse(abs_url)
-
-            # Only follow http/https and skip mailto:, tel:, javascript:, etc.
-            if parsed.scheme in ("http", "https") and self.allowed_domain in abs_url:
+            if self.allowed_domain in abs_url and abs_url.startswith("http"):
                 yield response.follow(abs_url, callback=self.parse_page)
+
+    def close(self, reason):
+        """
+        Ensure results.csv always exists, even if crawl found nothing.
+        """
+        results_file = pathlib.Path("out") / "results.csv"
+        if not results_file.exists() or self.items_scraped == 0:
+            results_file.parent.mkdir(parents=True, exist_ok=True)
+            with results_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Empty: run was not completed"])

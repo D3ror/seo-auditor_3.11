@@ -64,7 +64,11 @@ if results_path.exists():
     st.subheader("Latest results")
     try:
         df = pd.read_csv(results_path)
-        if df.empty:
+
+        # Detect empty run marker
+        if "Empty: run was not completed" in df.columns[0]:
+            st.warning("Last crawl did not complete. Empty results file created.")
+        elif df.empty:
             st.warning("No results parsed from last crawl.")
         else:
             st.dataframe(df)
@@ -198,7 +202,10 @@ if run_clicked:
             status.write("Loading results…")
             try:
                 df = pd.read_csv(results_path)
-                if df.empty:
+
+                if "Empty: run was not completed" in df.columns[0]:
+                    st.warning("Crawl did not complete. Empty results file created.")
+                elif df.empty:
                     st.warning("Crawl completed but no results were parsed.")
                 else:
                     st.subheader("Crawl results")

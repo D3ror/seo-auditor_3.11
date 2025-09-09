@@ -8,7 +8,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-class OptionsSpider(scrapy.Spider):
+class SeoSpider(scrapy.Spider):
     """
     Usage:
       scrapy crawl seo -a start_url=https://example.com -O out/results.csv

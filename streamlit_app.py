@@ -47,17 +47,18 @@ def highlight_issues(val, colname):
     return ""
 
 def styled_dataframe(df):
-    return df.style.applymap(
-        lambda v: highlight_issues(v, "status"), subset=["status"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_title"), subset=["duplicate_title"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_h1"), subset=["duplicate_h1"]
-    ).applymap(
-        lambda v: highlight_issues(v, "canonical"), subset=["canonical"]
-    ).applymap(
-        lambda v: highlight_issues(v, "robots_meta"), subset=["robots_meta"]
-    )
+    df_style = df.style
+    if "status" in df.columns:
+        df_style = df_style.applymap(lambda v: highlight_issues(v, "status"), subset=["status"])
+    if "duplicate_title" in df.columns:
+        df_style = df_style.applymap(lambda v: highlight_issues(v, "duplicate_title"), subset=["duplicate_title"])
+    if "duplicate_h1" in df.columns:
+        df_style = df_style.applymap(lambda v: highlight_issues(v, "duplicate_h1"), subset=["duplicate_h1"])
+    if "canonical" in df.columns:
+        df_style = df_style.applymap(lambda v: highlight_issues(v, "canonical"), subset=["canonical"])
+    if "robots_meta" in df.columns:
+        df_style = df_style.applymap(lambda v: highlight_issues(v, "robots_meta"), subset=["robots_meta"])
+    return df_style
 
 # Show latest results if available
 if results_path.exists():
@@ -65,59 +66,56 @@ if results_path.exists():
     try:
         df = pd.read_csv(results_path)
 
-        # Detect empty run marker
         if "Empty: run was not completed" in df.columns[0]:
             st.warning("Last crawl did not complete. Empty results file created.")
         elif df.empty:
             st.warning("No results parsed from last crawl.")
         else:
             st.dataframe(df)
-	existing_cols = [c for c in preview_cols if c in df.columns]
-	if existing_cols:
-    		st.subheader("SEO Signals (Preview with highlights)")
-    	try:
-        	st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-    	except Exception:
-        	st.warning("Results file exists but doesn’t contain SEO columns.")
-     else:
-          if "Empty: run was not completed" in df.columns or "Empty: run was not completed" in df.iloc[0].to_string():
-        	st.warning("Crawl finished with no results. (Empty run)")
-    	  else:
-        	st.warning("Results file exists but has no SEO data.")
 
-                # Download buttons
-                st.download_button(
-                    "Download CSV",
-                    data=df.to_csv(index=False).encode("utf-8"),
-                    file_name="seo_audit_results.csv",
-                    mime="text/csv",
-                )
-                st.download_button(
-                    "Download JSON",
-                    data=df.to_json(orient="records", indent=2).encode("utf-8"),
-                    file_name="seo_audit_results.json",
-                    mime="application/json",
-                )
+            existing_cols = [c for c in preview_cols if c in df.columns]
+            if existing_cols:
+                st.subheader("SEO Signals (Preview with highlights)")
+                try:
+                    st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+                except Exception:
+                    st.warning("Results file exists but doesn’t contain SEO columns.")
+            else:
+                st.warning("Results file exists but has no SEO data.")
 
-                # Google Sheets export (if secrets available)
-                if "gcp_service_account" in st.secrets:
-                    try:
-                        import gspread
-                        from google.oauth2.service_account import Credentials
+            # Download buttons
+            st.download_button(
+                "Download CSV",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name="seo_audit_results.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "Download JSON",
+                data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                file_name="seo_audit_results.json",
+                mime="application/json",
+            )
 
-                        creds = Credentials.from_service_account_info(
-                            st.secrets["gcp_service_account"],
-                            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                        )
-                        client = gspread.authorize(creds)
-                        sheet = client.create("SEO Audit Results")
-                        worksheet = sheet.get_worksheet(0)
-                        worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-                        st.success(f"Exported to Google Sheets: {sheet.url}")
-                    except Exception as e:
-                        st.error(f"Could not export to Google Sheets: {e}")
-                else:
-                    st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
+            # Google Sheets export (if secrets available)
+            if "gcp_service_account" in st.secrets:
+                try:
+                    import gspread
+                    from google.oauth2.service_account import Credentials
+
+                    creds = Credentials.from_service_account_info(
+                        st.secrets["gcp_service_account"],
+                        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                    )
+                    client = gspread.authorize(creds)
+                    sheet = client.create("SEO Audit Results")
+                    worksheet = sheet.get_worksheet(0)
+                    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
+                    st.success(f"Exported to Google Sheets: {sheet.url}")
+                except Exception as e:
+                    st.error(f"Could not export to Google Sheets: {e}")
+            else:
+                st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
     except Exception as e:
         st.error(f"Could not read results.csv: {e}")
 
@@ -222,21 +220,26 @@ if run_clicked:
                     existing_cols = [c for c in preview_cols if c in df.columns]
                     if existing_cols:
                         st.subheader("SEO Signals (Preview with highlights)")
-                        st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+                        try:
+                            st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+                        except Exception:
+                            st.warning("Results file exists but doesn’t contain SEO columns.")
+                    else:
+                        st.warning("Results file exists but has no SEO data.")
 
-                        # Download buttons
-                        st.download_button(
-                            "Download CSV",
-                            data=df.to_csv(index=False).encode("utf-8"),
-                            file_name="seo_audit_results.csv",
-                            mime="text/csv",
-                        )
-                        st.download_button(
-                            "Download JSON",
-                            data=df.to_json(orient="records", indent=2).encode("utf-8"),
-                            file_name="seo_audit_results.json",
-                            mime="application/json",
-                        )
+                    # Download buttons
+                    st.download_button(
+                        "Download CSV",
+                        data=df.to_csv(index=False).encode("utf-8"),
+                        file_name="seo_audit_results.csv",
+                        mime="text/csv",
+                    )
+                    st.download_button(
+                        "Download JSON",
+                        data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                        file_name="seo_audit_results.json",
+                        mime="application/json",
+                    )
 
                 progress.progress(100)
                 status.update(label="Crawl complete", state="complete")

@@ -21,7 +21,7 @@ class OptionsSpider(scrapy.Spider):
         self.allowed_domain = tldextract.extract(start_url).registered_domain
         self.visited_titles = set()
         self.visited_h1s = set()
-        self.items_scraped = 0  # <-- track if any results were scraped
+        self.items_scraped = 0  # track how many rows were actually scraped
 
     def start_requests(self):
         # Crawl homepage
@@ -40,12 +40,12 @@ class OptionsSpider(scrapy.Spider):
         yield {
             "url": response.url,
             "status": response.status,
-            "robots_txt": response.text[:5000],
+            "robots_txt": response.text[:5000],  # store first 5k chars
         }
 
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
-            self.items_scraped += 1
+            # Following sitemap URLs may yield results later
             yield response.follow(loc, callback=self.parse_page)
 
     def parse_page(self, response):
@@ -73,6 +73,7 @@ class OptionsSpider(scrapy.Spider):
             "duplicate_h1": duplicate_h1,
         }
 
+        # Follow internal links
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
             if self.allowed_domain in abs_url and abs_url.startswith("http"):
@@ -80,11 +81,13 @@ class OptionsSpider(scrapy.Spider):
 
     def close(self, reason):
         """
-        Ensure results.csv always exists, even if crawl found nothing.
+        Fail-safe: Ensure results.csv always exists.
+        If no items were scraped, write a marker row.
         """
         results_file = pathlib.Path("out") / "results.csv"
+        results_file.parent.mkdir(parents=True, exist_ok=True)
+
         if not results_file.exists() or self.items_scraped == 0:
-            results_file.parent.mkdir(parents=True, exist_ok=True)
             with results_file.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Empty: run was not completed"])

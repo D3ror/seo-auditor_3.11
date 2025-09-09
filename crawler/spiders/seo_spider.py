@@ -4,9 +4,11 @@ from urllib.parse import urljoin
 from scrapy.http import Request
 import csv
 import pathlib
-import json
-import time
-from scrapy import signals
+import warnings
+
+# Suppress deprecation warnings from Scrapy
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class OptionsSpider(scrapy.Spider):
@@ -24,50 +26,14 @@ class OptionsSpider(scrapy.Spider):
         self.allowed_domain = tldextract.extract(start_url).registered_domain
         self.visited_titles = set()
         self.visited_h1s = set()
-        self.items_scraped = 0
-        self.sitemap_total = 0
-        self._progress_path = pathlib.Path("out") / "progress.json"
+        self.items_scraped = 0  # track if any results were scraped
 
-    @classmethod
-    def from_crawler(cls, crawler, *args, **kwargs):
-        spider = super().from_crawler(crawler, *args, **kwargs)
-        # connect signals
-        crawler.signals.connect(spider.item_scraped_signal, signal=signals.item_scraped)
-        crawler.signals.connect(spider.spider_closed_signal, signal=signals.spider_closed)
-        crawler.signals.connect(spider.spider_opened_signal, signal=signals.spider_opened)
-        return spider
+        # For option 1: progress signal
+        self.progress_signal_file = pathlib.Path("out") / "progress.signal"
+        self.progress_signal_file.parent.mkdir(parents=True, exist_ok=True)
+        self.progress_signal_file.write_text("0")  # initial progress
 
-    def spider_opened_signal(self, spider):
-        # initialize progress file
-        self._write_progress(status="running", reason=None)
-
-    def item_scraped_signal(self, item, response, spider):
-        # increment and persist progress
-        self.items_scraped += 1
-        last_url = response.url if response is not None else ""
-        self._write_progress(status="running", last_url=last_url)
-
-    def spider_closed_signal(self, spider, reason):
-        # mark finished
-        self._write_progress(status="finished", reason=reason)
-
-    def _write_progress(self, status="running", last_url="", reason=None):
-        payload = {
-            "items_scraped": int(self.items_scraped),
-            "sitemap_total": int(self.sitemap_total or 0),
-            "last_url": last_url,
-            "status": status,
-            "reason": reason,
-            "ts": int(time.time()),
-        }
-        try:
-            self._progress_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._progress_path.open("w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-        except Exception:
-            self.logger.debug("Could not write progress file", exc_info=True)
-
-    async def start(self):
+    def start_requests(self):
         # Crawl homepage
         yield Request(self.start_url, callback=self.parse_page, dont_filter=True)
 
@@ -80,20 +46,17 @@ class OptionsSpider(scrapy.Spider):
         yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True)
 
     def parse_robots(self, response):
-        return {
+        self.items_scraped += 1
+        self._update_progress()
+        yield {
             "url": response.url,
             "status": response.status,
             "robots_txt": response.text[:5000],
         }
 
     def parse_sitemap(self, response):
-        locs = response.css("loc::text").getall()
-        if locs:
-            self.sitemap_total = len(locs)
-            self._write_progress()
-        for loc in locs:
-            if loc.startswith("http"):
-                yield response.follow(loc, callback=self.parse_page)
+        for loc in response.css("loc::text").getall():
+            yield response.follow(loc, callback=self.parse_page)
 
     def parse_page(self, response):
         title = response.css("title::text").get(default="").strip()
@@ -107,7 +70,11 @@ class OptionsSpider(scrapy.Spider):
         self.visited_titles.add(title)
         self.visited_h1s.add(h1)
 
-        return {
+        self.items_scraped += 1
+        self._update_progress()
+
+        # Yield the SEO item
+        yield {
             "url": response.url,
             "status": response.status,
             "title": title,
@@ -119,7 +86,7 @@ class OptionsSpider(scrapy.Spider):
             "duplicate_h1": duplicate_h1,
         }
 
-        # Follow links
+        # Follow internal links
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
             if self.allowed_domain in abs_url and abs_url.startswith("http"):
@@ -135,3 +102,19 @@ class OptionsSpider(scrapy.Spider):
             with results_file.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Empty: run was not completed"])
+
+        # Remove progress signal file after crawl finishes
+        if self.progress_signal_file.exists():
+            self.progress_signal_file.unlink()
+
+    def _update_progress(self):
+        """
+        Write a simple progress number to a signal file for Streamlit to read.
+        """
+        try:
+            if self.progress_signal_file.exists():
+                val = int(self.progress_signal_file.read_text() or "0")
+                val += 1
+                self.progress_signal_file.write_text(str(val))
+        except Exception:
+            pass

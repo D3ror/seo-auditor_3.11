@@ -1,16 +1,15 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import scrapy
 import tldextract
 from urllib.parse import urljoin
 from scrapy.http import Request
 import csv
 import pathlib
-import warnings
-
-# Suppress deprecation warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 OUT_DIR = pathlib.Path("out")
-PROGRESS_FILE = OUT_DIR / "progress.signal"
 
 class OptionsSpider(scrapy.Spider):
     """
@@ -27,22 +26,20 @@ class OptionsSpider(scrapy.Spider):
         self.allowed_domain = tldextract.extract(start_url).registered_domain
         self.visited_titles = set()
         self.visited_h1s = set()
-        self.items_scraped = 0  # track scraped items
-
-        OUT_DIR.mkdir(parents=True, exist_ok=True)
-        PROGRESS_FILE.write_text("0")  # initialize progress
-
-    def _update_progress(self):
-        self.items_scraped += 1
-        PROGRESS_FILE.write_text(str(self.items_scraped))
+        self.items_scraped = 0
+        self.log_lines = []  # For progress tracking
 
     def start_requests(self):
+        # Homepage
         yield Request(self.start_url, callback=self.parse_page, dont_filter=True)
+        # Robots.txt
         yield Request(urljoin(self.start_url, "/robots.txt"), callback=self.parse_robots, dont_filter=True)
+        # Sitemap.xml
         yield Request(urljoin(self.start_url, "/sitemap.xml"), callback=self.parse_sitemap, dont_filter=True)
 
     def parse_robots(self, response):
-        self._update_progress()
+        self.items_scraped += 1
+        self.log_lines.append(f"Fetched robots.txt: {response.url}")
         yield {
             "url": response.url,
             "status": response.status,
@@ -51,8 +48,9 @@ class OptionsSpider(scrapy.Spider):
 
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
+            self.items_scraped += 1
+            self.log_lines.append(f"Found sitemap URL: {loc}")
             yield response.follow(loc, callback=self.parse_page)
-            self._update_progress()
 
     def parse_page(self, response):
         title = response.css("title::text").get(default="").strip()
@@ -66,7 +64,9 @@ class OptionsSpider(scrapy.Spider):
         self.visited_titles.add(title)
         self.visited_h1s.add(h1)
 
-        self._update_progress()
+        self.items_scraped += 1
+        self.log_lines.append(f"Parsed page: {response.url}")
+
         yield {
             "url": response.url,
             "status": response.status,
@@ -81,7 +81,7 @@ class OptionsSpider(scrapy.Spider):
 
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
-            if self.allowed_domain in abs_url and abs_url.startswith("http"):
+            if abs_url.startswith("http") and self.allowed_domain in abs_url:
                 yield response.follow(abs_url, callback=self.parse_page)
 
     def close(self, reason):
@@ -93,4 +93,5 @@ class OptionsSpider(scrapy.Spider):
             results_file.parent.mkdir(parents=True, exist_ok=True)
             with results_file.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
+                writer.writerow(["status"])  # Proper CSV header
                 writer.writerow(["Empty: run was not completed"])

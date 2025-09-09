@@ -72,10 +72,18 @@ if results_path.exists():
             st.warning("No results parsed from last crawl.")
         else:
             st.dataframe(df)
-            existing_cols = [c for c in preview_cols if c in df.columns]
-            if existing_cols:
-                st.subheader("SEO Signals (Preview with highlights)")
-                st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+	existing_cols = [c for c in preview_cols if c in df.columns]
+	if existing_cols:
+    		st.subheader("SEO Signals (Preview with highlights)")
+    	try:
+        	st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+    	except Exception:
+        	st.warning("Results file exists but doesn’t contain SEO columns.")
+     else:
+          if "Empty: run was not completed" in df.columns or "Empty: run was not completed" in df.iloc[0].to_string():
+        	st.warning("Crawl finished with no results. (Empty run)")
+    	  else:
+        	st.warning("Results file exists but has no SEO data.")
 
                 # Download buttons
                 st.download_button(

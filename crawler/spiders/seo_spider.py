@@ -4,7 +4,9 @@ from urllib.parse import urljoin
 from scrapy.http import Request
 import csv
 import pathlib
+import warnings
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 class OptionsSpider(scrapy.Spider):
     """

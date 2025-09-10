@@ -61,52 +61,52 @@ class SeoSpider(scrapy.Spider):
             yield response.follow(loc, callback=self.parse_page, errback=self.handle_error)
 
     def parse_page(self, response):
-    """
-    Parse a single page for SEO signals.
-    Skip non-HTML resources (images, PDFs, etc.) but log them.
-    """
-    # --- Check Content-Type ---
-    content_type = response.headers.get("Content-Type", b"").decode("utf-8").lower()
+        """
+        Parse a single page for SEO signals.
+        Skip non-HTML resources (images, PDFs, etc.) but log them.
+        """
+        # --- Check Content-Type ---
+        content_type = response.headers.get("Content-Type", b"").decode("utf-8").lower()
 
-    if not content_type.startswith("text/html"):
-        # Non-HTML resource → log and return basic info only
+        if not content_type.startswith("text/html"):
+            # Non-HTML resource → log and return basic info only
+            yield {
+                "url": response.url,
+                "status": response.status,
+                "title": None,
+                "h1": None,
+                "canonical": None,
+                "robots_meta": None,
+                "hreflang_count": 0,
+                "duplicate_title": False,
+                "duplicate_h1": False,
+                "note": f"Skipped non-HTML resource ({content_type})"
+            }
+            return
+
+        # --- Safe to parse HTML ---
+        title = (response.css("title::text").get(default="") or "").strip()
+        h1 = (response.css("h1::text").get(default="") or "").strip()
+        canonical = response.css('link[rel="canonical"]::attr(href)').get(default="")
+        robots_meta = response.css('meta[name="robots"]::attr(content)').get(default="")
+
+        # hreflang count
+        hreflangs = response.css('link[rel="alternate"][hreflang]')
+        hreflang_count = len(hreflangs)
+
+        # Yield structured results
         yield {
             "url": response.url,
             "status": response.status,
-            "title": None,
-            "h1": None,
-            "canonical": None,
-            "robots_meta": None,
-            "hreflang_count": 0,
-            "duplicate_title": False,
+            "title": title,
+            "h1": h1,
+            "canonical": canonical,
+            "robots_meta": robots_meta,
+            "hreflang_count": hreflang_count,
+            "duplicate_title": False,  # will be flagged later in deduplication step
             "duplicate_h1": False,
-            "note": f"Skipped non-HTML resource ({content_type})"
+            "note": None,
         }
-        return
-
-    # --- Safe to parse HTML ---
-    title = (response.css("title::text").get(default="") or "").strip()
-    h1 = (response.css("h1::text").get(default="") or "").strip()
-    canonical = response.css('link[rel="canonical"]::attr(href)').get(default="")
-    robots_meta = response.css('meta[name="robots"]::attr(content)').get(default="")
-
-    # hreflang count
-    hreflangs = response.css('link[rel="alternate"][hreflang]')
-    hreflang_count = len(hreflangs)
-
-    # Yield structured results
-    yield {
-        "url": response.url,
-        "status": response.status,
-        "title": title,
-        "h1": h1,
-        "canonical": canonical,
-        "robots_meta": robots_meta,
-        "hreflang_count": hreflang_count,
-        "duplicate_title": False,  # will be flagged later in deduplication step
-        "duplicate_h1": False,
-        "note": None,
-    }
 
         # Follow internal links (with explicit decision logging)
         for href in response.css("a::attr(href)").getall():

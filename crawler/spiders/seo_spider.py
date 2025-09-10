@@ -5,24 +5,17 @@ from scrapy.http import Request
 import csv
 import pathlib
 import warnings
-import time
 
-# Suppress deprecation & user warnings globally
+# Suppress deprecation warnings from Scrapy
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
 
 
-class SeoSpider(scrapy.Spider):
+class OptionsSpider(scrapy.Spider):
     """
     Usage:
       scrapy crawl seo -a start_url=https://example.com -O out/results.csv
     """
     name = "seo"
-
-    custom_settings = {
-        "DOWNLOAD_TIMEOUT": 15,  # fail fast on long waits
-        "RETRY_TIMES": 1,        # fewer retries for speed
-    }
 
     def __init__(self, start_url=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -32,28 +25,38 @@ class SeoSpider(scrapy.Spider):
         self.allowed_domain = tldextract.extract(start_url).registered_domain
         self.visited_titles = set()
         self.visited_h1s = set()
-        self.items_scraped = 0
-        self.start_time = None
+        self.items_scraped = 0  # track if any results were scraped
 
     def start_requests(self):
-        self.start_time = time.time()
         # Crawl homepage
-        yield Request(self.start_url, callback=self.parse_page, dont_filter=True, errback=self.handle_error)
+        yield Request(self.start_url, callback=self.parse_page, dont_filter=True)
+
+        # Crawl robots.txt (only log, not part of results)
+        robots_url = urljoin(self.start_url, "/robots.txt")
+        yield Request(robots_url, callback=self.parse_robots, dont_filter=True)
 
         # Crawl sitemap.xml
         sitemap_url = urljoin(self.start_url, "/sitemap.xml")
-        yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True, errback=self.handle_error)
+        yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True)
+
+    def parse_robots(self, response):
+        # Do not yield into results anymore, only mark as scraped
+        self.items_scraped += 1
 
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
-            yield response.follow(loc, callback=self.parse_page, errback=self.handle_error)
+            self.items_scraped += 1
+            yield response.follow(loc, callback=self.parse_page)
 
     def parse_page(self, response):
-        latency = round(response.meta.get("download_latency", 0), 2)
-
         # Extract SEO signals
-        title = (response.css("title::text").get(default="") or "").strip()
-        h1 = " ".join(response.css("h1 *::text").getall()).strip()
+        title = response.css("title::text").get(default="").strip()
+
+        # FIX: Extract h1 text even if nested tags
+        h1_elements = response.xpath("//h1")
+        h1s = [" ".join(el.xpath(".//text()").getall()).strip() for el in h1_elements]
+        h1 = "; ".join([h for h in h1s if h]) if h1s else ""
+
         canonical = response.css("link[rel=canonical]::attr(href)").get()
         robots_meta = ",".join(response.css("meta[name=robots]::attr(content)").getall())
         hreflangs = response.css("link[rel=alternate][hreflang]::attr(hreflang)").getall()
@@ -68,7 +71,6 @@ class SeoSpider(scrapy.Spider):
         yield {
             "url": response.url,
             "status": response.status,
-            "wait_time": latency,
             "title": title,
             "h1": h1,
             "canonical": canonical,
@@ -78,28 +80,25 @@ class SeoSpider(scrapy.Spider):
             "duplicate_h1": duplicate_h1,
         }
 
-        # Follow internal links
+        # Follow internal links with filters
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
-            if self.allowed_domain in abs_url and abs_url.startswith("http"):
-                yield response.follow(abs_url, callback=self.parse_page, errback=self.handle_error)
 
-    def handle_error(self, failure):
-        """Log failed requests (e.g. timeout)"""
-        request = failure.request
-        self.items_scraped += 1
-        yield {
-            "url": request.url,
-            "status": "failed",
-            "wait_time": "Page could not be opened due to long wait time. See CWV scores.",
-            "title": "",
-            "h1": "",
-            "canonical": "",
-            "robots_meta": "",
-            "hreflang_count": 0,
-            "duplicate_title": False,
-            "duplicate_h1": False,
-        }
+            # Skip if not same domain
+            if self.allowed_domain not in abs_url:
+                continue
+
+            # Skip affiliate/tracking links
+            if any(x in abs_url for x in ["/aff", "/go/", "ref=", "utm_"]):
+                continue
+
+            # Skip non-HTML links
+            if abs_url.startswith(("mailto:", "tel:", "javascript:")):
+                continue
+
+            # Finally follow valid internal links
+            if abs_url.startswith("http"):
+                yield response.follow(abs_url, callback=self.parse_page)
 
     def close(self, reason):
         """

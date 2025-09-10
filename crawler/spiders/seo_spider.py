@@ -1,254 +1,112 @@
-import streamlit as st
-import pandas as pd
+import scrapy
+import tldextract
+from urllib.parse import urljoin
+from scrapy.http import Request
+import csv
 import pathlib
-import time
-from urllib.parse import urlparse
-import sys
-import subprocess
-import json
+import warnings
 
-st.set_page_config(page_title="SEO Crawl & Indexability Auditor", layout="wide")
+# Suppress deprecation warnings from Scrapy
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-st.title("SEO Crawl & Indexability Auditor")
 
-domain = st.text_input("Domain (https://example.com)")
-run_clicked = st.button("Run")
+class OptionsSpider(scrapy.Spider):
+    """
+    Usage:
+      scrapy crawl seo -a start_url=https://example.com -O out/results.csv
+    """
+    name = "seo"
 
-out_dir = pathlib.Path("out")
-out_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, start_url=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not start_url:
+            raise ValueError("You must pass -a start_url=...")
+        self.start_url = start_url
+        self.allowed_domain = tldextract.extract(start_url).registered_domain
+        self.visited_titles = set()
+        self.visited_h1s = set()
+        self.items_scraped = 0  # track if any results were scraped
 
-results_path = out_dir / "results.csv"
-log_path = out_dir / "runner.log"
-error_path = out_dir / "error.log"
+    def start_requests(self):
+        # Crawl homepage
+        yield Request(self.start_url, callback=self.parse_page, dont_filter=True)
 
-# Columns we care about for SEO preview
-preview_cols = [
-    "url",
-    "status",
-    "title",
-    "h1",
-    "canonical",
-    "robots_meta",
-    "hreflang_count",
-    "duplicate_title",
-    "duplicate_h1",
-]
+        # Crawl robots.txt (only log, not part of results)
+        robots_url = urljoin(self.start_url, "/robots.txt")
+        yield Request(robots_url, callback=self.parse_robots, dont_filter=True)
 
-# Helper: Highlight SEO issues with semi-transparent colors
-def highlight_issues(val, colname):
-    if colname == "status" and val != 200:
-        return "background-color: rgba(255, 0, 0, 0.1)"  # faint red
-    if colname == "duplicate_title" and val:
-        return "background-color: rgba(255, 165, 0, 0.1)"  # faint orange
-    if colname == "duplicate_h1" and val:
-        return "background-color: rgba(255, 165, 0, 0.1)"  # faint orange
-    if colname in ("canonical", "robots_meta") and (pd.isna(val) or val == ""):
-        return "background-color: rgba(255, 255, 0, 0.1)"  # faint yellow
-    return ""
+        # Crawl sitemap.xml
+        sitemap_url = urljoin(self.start_url, "/sitemap.xml")
+        yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True)
 
-def styled_dataframe(df):
-    return df.style.applymap(
-        lambda v: highlight_issues(v, "status"), subset=["status"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_title"), subset=["duplicate_title"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_h1"), subset=["duplicate_h1"]
-    ).applymap(
-        lambda v: highlight_issues(v, "canonical"), subset=["canonical"]
-    ).applymap(
-        lambda v: highlight_issues(v, "robots_meta"), subset=["robots_meta"]
-    )
+    def parse_robots(self, response):
+        # Do not yield into results anymore, only mark as scraped
+        self.items_scraped += 1
 
-# Show latest results if available
-if results_path.exists():
-    st.subheader("Latest results")
-    try:
-        df = pd.read_csv(results_path)
+    def parse_sitemap(self, response):
+        for loc in response.css("loc::text").getall():
+            self.items_scraped += 1
+            yield response.follow(loc, callback=self.parse_page)
 
-        # Detect empty run marker
-        if "Empty: run was not completed" in df.columns[0]:
-            st.warning("Last crawl did not complete. Empty results file created.")
-        elif df.empty:
-            st.warning("No results parsed from last crawl.")
-        else:
-            st.dataframe(df)
+    def parse_page(self, response):
+        # Extract SEO signals
+        title = response.css("title::text").get(default="").strip()
 
-            existing_cols = [c for c in preview_cols if c in df.columns]
-            if existing_cols:
-                st.subheader("SEO Signals (Preview with highlights)")
-                try:
-                    st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-                except Exception:
-                    st.warning("Results file exists but doesn’t contain SEO columns.")
-            else:
-                if "Empty: run was not completed" in df.columns or "Empty: run was not completed" in df.iloc[0].to_string():
-                    st.warning("Crawl finished with no results. (Empty run)")
-                else:
-                    st.warning("Results file exists but has no SEO data.")
+        # FIX: Extract h1 text even if nested tags
+        h1_elements = response.xpath("//h1")
+        h1s = [" ".join(el.xpath(".//text()").getall()).strip() for el in h1_elements]
+        h1 = "; ".join([h for h in h1s if h]) if h1s else ""
 
-            # Download buttons (unique keys!)
-            st.download_button(
-                "Download CSV",
-                data=df.to_csv(index=False).encode("utf-8"),
-                file_name="seo_audit_results.csv",
-                mime="text/csv",
-                key="download_csv_main",
-            )
-            st.download_button(
-                "Download JSON",
-                data=df.to_json(orient="records", indent=2).encode("utf-8"),
-                file_name="seo_audit_results.json",
-                mime="application/json",
-                key="download_json_main",
-            )
+        canonical = response.css("link[rel=canonical]::attr(href)").get()
+        robots_meta = ",".join(response.css("meta[name=robots]::attr(content)").getall())
+        hreflangs = response.css("link[rel=alternate][hreflang]::attr(hreflang)").getall()
 
-            # Google Sheets export (if secrets available)
-            if "gcp_service_account" in st.secrets:
-                try:
-                    import gspread
-                    from google.oauth2.service_account import Credentials
+        # Track duplicates
+        duplicate_title = title in self.visited_titles
+        duplicate_h1 = h1 in self.visited_h1s
+        self.visited_titles.add(title)
+        self.visited_h1s.add(h1)
 
-                    creds = Credentials.from_service_account_info(
-                        st.secrets["gcp_service_account"],
-                        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                    )
-                    client = gspread.authorize(creds)
-                    sheet = client.create("SEO Audit Results")
-                    worksheet = sheet.get_worksheet(0)
-                    worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-                    st.success(f"Exported to Google Sheets: {sheet.url}")
-                except Exception as e:
-                    st.error(f"Could not export to Google Sheets: {e}")
-            else:
-                st.info("Google Sheets export not configured (set `gcp_service_account` in Streamlit secrets).")
-    except Exception as e:
-        st.error(f"Could not read results.csv: {e}")
+        self.items_scraped += 1
+        yield {
+            "url": response.url,
+            "status": response.status,
+            "title": title,
+            "h1": h1,
+            "canonical": canonical,
+            "robots_meta": robots_meta,
+            "hreflang_count": len(hreflangs),
+            "duplicate_title": duplicate_title,
+            "duplicate_h1": duplicate_h1,
+        }
 
-if run_clicked:
-    with st.status("Preparing to crawl…", expanded=True) as status:
-        try:
-            # Reset logs and results
-            log_path.write_text("")
-            error_path.write_text("")
-            if results_path.exists():
-                results_path.unlink()
+        # Follow internal links with filters
+        for href in response.css("a::attr(href)").getall():
+            abs_url = urljoin(response.url, href)
 
-            # 1) Validate input
-            status.write("Validating input…")
-            parsed = urlparse(domain.strip())
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                status.update(label="Invalid URL. Please include https://", state="error")
-                st.stop()
+            # Skip if not same domain
+            if self.allowed_domain not in abs_url:
+                continue
 
-            # 2) Launch crawler
-            status.write("Launching crawler…")
-            try:
-                subprocess.Popen(
-                    [
-                        sys.executable, "-m", "scrapy", "crawl", "seo",
-                        "-a", f"start_url={domain}",
-                        "-O", str(results_path),
-                        "-L", "WARNING",  # suppress startup chatter
-                    ],
-                    stdout=open(log_path, "a", encoding="utf-8"),
-                    stderr=open(error_path, "a", encoding="utf-8"),
-                )
-            except FileNotFoundError:
-                status.update(label="Cannot start crawler", state="error")
-                st.error("Scrapy is not available in this environment.")
-                st.code("pip install scrapy scrapy-playwright")
-                st.stop()
+            # Skip affiliate/tracking links
+            if any(x in abs_url for x in ["/aff", "/go/", "ref=", "utm_"]):
+                continue
 
-            # 3) Monitor progress
-            progress = st.progress(0)
-            log_box = st.empty()
-            row_count = 0
-            stable_ticks = 0
-            wait_seconds = 600
+            # Skip non-HTML links
+            if abs_url.startswith(("mailto:", "tel:", "javascript:")):
+                continue
 
-            status.write("Crawling… this may take a while.")
-            for i in range(wait_seconds):
-                # Show logs
-                if log_path.exists():
-                    try:
-                        with log_path.open("r", encoding="utf-8", errors="ignore") as f:
-                            tail = f.readlines()[-12:]
-                        log_box.code("".join(tail), language="text")
-                    except Exception:
-                        pass
+            # Finally follow valid internal links
+            if abs_url.startswith("http"):
+                yield response.follow(abs_url, callback=self.parse_page)
 
-                # Show errors if crawl fails
-                if error_path.exists() and error_path.stat().st_size > 0:
-                    err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
-                    status.update(label="Crawler reported an error", state="error")
-                    st.error(err_txt.strip() or "Unknown error. See error log.")
-                    st.stop()
-
-                # Track progress via results
-                if results_path.exists():
-                    try:
-                        df = pd.read_csv(results_path)
-                        new_rows = len(df)
-                        if new_rows > row_count:
-                            row_count = new_rows
-                            stable_ticks = 0
-                        else:
-                            stable_ticks += 1
-
-                        pct = min(100, max(5, row_count))
-                        progress.progress(pct)
-                    except Exception:
-                        pass
-
-                    if stable_ticks >= 3:
-                        break
-
-                time.sleep(1)
-            else:
-                status.update(label="Timed out waiting for results.", state="error")
-                st.error("Timed out waiting for out/results.csv. Check logs.")
-                st.stop()
-
-            # 4) Load and show results
-            status.write("Loading results…")
-            try:
-                df = pd.read_csv(results_path)
-
-                if "Empty: run was not completed" in df.columns[0]:
-                    st.warning("Crawl did not complete. Empty results file created.")
-                elif df.empty:
-                    st.warning("Crawl completed but no results were parsed.")
-                else:
-                    st.subheader("Crawl results")
-                    st.dataframe(df)
-
-                    existing_cols = [c for c in preview_cols if c in df.columns]
-                    if existing_cols:
-                        st.subheader("SEO Signals (Preview with highlights)")
-                        st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-
-                        # Download buttons (unique keys!)
-                        st.download_button(
-                            "Download CSV",
-                            data=df.to_csv(index=False).encode("utf-8"),
-                            file_name="seo_audit_results.csv",
-                            mime="text/csv",
-                            key="download_csv_results",
-                        )
-                        st.download_button(
-                            "Download JSON",
-                            data=df.to_json(orient="records", indent=2).encode("utf-8"),
-                            file_name="seo_audit_results.json",
-                            mime="application/json",
-                            key="download_json_results",
-                        )
-
-                progress.progress(100)
-                status.update(label="Crawl complete", state="complete")
-
-            except Exception as e:
-                st.error(f"Crawl completed but results file could not be parsed: {e}")
-
-        except Exception as e:
-            status.update(label="An unexpected error occurred", state="error")
-            st.exception(e)
+    def close(self, reason):
+        """
+        Ensure results.csv always exists, even if crawl found nothing.
+        """
+        results_file = pathlib.Path("out") / "results.csv"
+        if not results_file.exists() or self.items_scraped == 0:
+            results_file.parent.mkdir(parents=True, exist_ok=True)
+            with results_file.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Empty: run was not completed"])

@@ -127,6 +127,7 @@ if submitted:
 
             status.write("Crawling… this may take a while.")
             for i in range(wait_seconds):
+                # Show logs
                 if log_path.exists():
                     try:
                         with log_path.open("r", encoding="utf-8", errors="ignore") as f:
@@ -135,13 +136,25 @@ if submitted:
                     except Exception:
                         pass
 
+                # Only treat *real* errors as fatal
                 if error_path.exists() and error_path.stat().st_size > 0:
                     err_txt = error_path.read_text(encoding="utf-8", errors="ignore")
-                    status.update(label="Crawler reported an error", state="error")
-                    st.error(err_txt.strip() or "Unknown error. See error log.")
-                    st.session_state.running = False
-                    st.stop()
 
+                    # Define non-fatal patterns to ignore
+                    non_fatal = ("DeprecationWarning", "UserWarning", "Retrying", "Ignoring")
+                    if any(w in err_txt for w in non_fatal):
+                        # Just show warning in log panel, don’t stop crawl
+                        log_box.code(err_txt.strip(), language="text")
+                        # Reset error.log so it doesn’t trip again
+                        error_path.write_text("")
+                    else:
+                        # Fatal error: stop crawl
+                        status.update(label="Crawler reported a fatal error", state="error")
+                        st.error(err_txt.strip() or "Unknown error. See error log.")
+                        st.session_state.running = False
+                        st.stop()
+
+                # Track progress via results
                 if results_path.exists():
                     try:
                         df = pd.read_csv(results_path)
@@ -207,9 +220,13 @@ if submitted:
         finally:
             st.session_state.running = False
 
+
+
 # --- Show logs & warnings (non-fatal) ---
 with st.expander("Crawler logs & warnings (non-fatal)"):
     st.text(log_buf.getvalue())
     if log_path.exists():
         st.text("--- crawler stdout ---")
         st.text(log_path.read_text(encoding="utf-8", errors="ignore"))
+
+

@@ -5,126 +5,148 @@ import time
 from urllib.parse import urlparse
 import sys
 import subprocess
+import json
 
 st.set_page_config(page_title="SEO Crawl & Indexability Auditor", layout="wide")
+
 st.title("SEO Crawl & Indexability Auditor")
 
 domain = st.text_input("Domain (https://example.com)")
 run_clicked = st.button("Run")
 
-OUT_DIR = pathlib.Path("out")
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+out_dir = pathlib.Path("out")
+out_dir.mkdir(parents=True, exist_ok=True)
 
-results_path = OUT_DIR / "results.csv"
-log_path = OUT_DIR / "runner.log"
-error_path = OUT_DIR / "error.log"
+results_path = out_dir / "results.csv"
+log_path = out_dir / "runner.log"
+error_path = out_dir / "error.log"
 
 preview_cols = [
-    "url", "status", "title", "h1", "canonical",
-    "robots_meta", "hreflang_count", "duplicate_title", "duplicate_h1"
+    "url", "status", "wait_time", "title", "h1", "canonical",
+    "robots_meta", "hreflang_count", "duplicate_title", "duplicate_h1",
 ]
 
 def highlight_issues(val, colname):
-    if colname == "status" and val != 200:
+    if colname == "status" and val != 200 and val != "failed":
         return "background-color: rgba(255, 0, 0, 0.1)"
-    if colname in ("duplicate_title", "duplicate_h1") and val:
+    if colname == "status" and val == "failed":
+        return "background-color: rgba(255, 0, 0, 0.2)"
+    if colname == "duplicate_title" and val:
+        return "background-color: rgba(255, 165, 0, 0.1)"
+    if colname == "duplicate_h1" and val:
         return "background-color: rgba(255, 165, 0, 0.1)"
     if colname in ("canonical", "robots_meta") and (pd.isna(val) or val == ""):
         return "background-color: rgba(255, 255, 0, 0.1)"
     return ""
 
 def styled_dataframe(df):
-    return df.style.applymap(
-        lambda v: highlight_issues(v, "status"), subset=["status"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_title"), subset=["duplicate_title"]
-    ).applymap(
-        lambda v: highlight_issues(v, "duplicate_h1"), subset=["duplicate_h1"]
-    ).applymap(
-        lambda v: highlight_issues(v, "canonical"), subset=["canonical"]
-    ).applymap(
-        lambda v: highlight_issues(v, "robots_meta"), subset=["robots_meta"]
-    )
+    style = df.style
+    for col in ["status", "duplicate_title", "duplicate_h1", "canonical", "robots_meta"]:
+        if col in df.columns:
+            style = style.applymap(lambda v, c=col: highlight_issues(v, c), subset=[col])
+    return style
 
 # Show latest results
 if results_path.exists():
     st.subheader("Latest results")
     try:
         df = pd.read_csv(results_path)
-        if df.empty or df.iloc[0]["status"] == "Empty: run was not completed":
+
+        if "Empty: run was not completed" in df.columns[0]:
             st.warning("Last crawl did not complete. Empty results file created.")
+        elif df.empty:
+            st.warning("No results parsed from last crawl.")
         else:
             st.dataframe(df)
             existing_cols = [c for c in preview_cols if c in df.columns]
             if existing_cols:
-                try:
-                    st.subheader("SEO Signals (Preview with highlights)")
-                    st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-                except Exception:
-                    st.warning("Results file exists but doesn’t contain SEO columns.")
+                st.subheader("SEO Signals (Preview with highlights)")
+                st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+
+            st.download_button(
+                "Download CSV",
+                data=df.to_csv(index=False).encode("utf-8"),
+                file_name="seo_audit_results.csv",
+                mime="text/csv",
+            )
+            st.download_button(
+                "Download JSON",
+                data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                file_name="seo_audit_results.json",
+                mime="application/json",
+            )
     except Exception as e:
         st.error(f"Could not read results.csv: {e}")
 
-# Run crawl
 if run_clicked:
-    log_path.write_text("")
-    error_path.write_text("")
-    if results_path.exists():
-        results_path.unlink()
-
-    parsed = urlparse(domain.strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        st.error("Invalid URL. Please include https://")
-        st.stop()
-
-    progress = st.progress(0)
-    log_box = st.empty()
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "scrapy", "crawl", "seo", "-a", f"start_url={domain}", "-O", str(results_path), "-L", "WARNING"],
-            stdout=open(log_path, "a", encoding="utf-8"),
-            stderr=open(error_path, "a", encoding="utf-8")
-        )
-    except FileNotFoundError:
-        st.error("Scrapy is not installed. pip install scrapy scrapy-playwright")
-        st.stop()
-
-    # Monitor progress by log lines (option A)
-    status = st.empty()
-    row_count = 0
-    stable_ticks = 0
-    wait_seconds = 600
-    for _ in range(wait_seconds):
-        if log_path.exists():
-            try:
-                lines = log_path.read_text(errors="ignore").splitlines()
-                log_box.code("\n".join(lines[-12:]), language="text")
-                pct = min(100, int(len(lines) / 50 * 100))  # approximate progress
-                progress.progress(pct)
-            except Exception:
-                pass
-        if error_path.exists() and error_path.stat().st_size > 0:
-            err_txt = error_path.read_text(errors="ignore")
-            st.error(err_txt)
-            st.stop()
-        time.sleep(1)
-
-    progress.progress(100)
-    status.text("Crawl finished. Check results below.")
-
-    # Reload results after crawl
-    if results_path.exists():
+    with st.status("Preparing to crawl…", expanded=True) as status:
         try:
-            df = pd.read_csv(results_path)
-            if df.empty or df.iloc[0]["status"] == "Empty: run was not completed":
-                st.warning("Crawl did not complete. Empty results file created.")
-            else:
-                st.subheader("Crawl results")
-                st.dataframe(df)
-                existing_cols = [c for c in preview_cols if c in df.columns]
-                if existing_cols:
-                    st.subheader("SEO Signals (Preview with highlights)")
-                    st.dataframe(styled_dataframe(df[existing_cols].head(50)))
-        except Exception:
-            st.warning("Could not parse results.csv after crawl.")
+            log_path.write_text("")
+            error_path.write_text("")
+            if results_path.exists():
+                results_path.unlink()
+
+            status.write("Validating input…")
+            parsed = urlparse(domain.strip())
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                status.update(label="Invalid URL. Please include https://", state="error")
+                st.stop()
+
+            status.write("Launching crawler…")
+            try:
+                subprocess.run(
+                    [
+                        sys.executable, "-m", "scrapy", "crawl", "seo",
+                        "-a", f"start_url={domain}",
+                        "-O", str(results_path),
+                        "-L", "WARNING",
+                    ],
+                    stdout=open(log_path, "a", encoding="utf-8"),
+                    stderr=open(error_path, "a", encoding="utf-8"),
+                    check=False,
+                )
+            except FileNotFoundError:
+                status.update(label="Cannot start crawler", state="error")
+                st.error("Scrapy is not available in this environment.")
+                st.stop()
+
+            progress = st.progress(100)
+            status.write("Crawl finished. Loading results…")
+
+            try:
+                df = pd.read_csv(results_path)
+
+                if "Empty: run was not completed" in df.columns[0]:
+                    st.warning("Crawl did not complete. Empty results file created.")
+                elif df.empty:
+                    st.warning("Crawl completed but no results were parsed.")
+                else:
+                    st.subheader("Crawl results")
+                    st.dataframe(df)
+
+                    existing_cols = [c for c in preview_cols if c in df.columns]
+                    if existing_cols:
+                        st.subheader("SEO Signals (Preview with highlights)")
+                        st.dataframe(styled_dataframe(df[existing_cols].head(50)))
+
+                        st.download_button(
+                            "Download CSV",
+                            data=df.to_csv(index=False).encode("utf-8"),
+                            file_name="seo_audit_results.csv",
+                            mime="text/csv",
+                        )
+                        st.download_button(
+                            "Download JSON",
+                            data=df.to_json(orient="records", indent=2).encode("utf-8"),
+                            file_name="seo_audit_results.json",
+                            mime="application/json",
+                        )
+
+                status.update(label="Crawl complete", state="complete")
+
+            except Exception as e:
+                st.error(f"Crawl completed but results file could not be parsed: {e}")
+
+        except Exception as e:
+            status.update(label="Unexpected error", state="error")
+            st.exception(e)

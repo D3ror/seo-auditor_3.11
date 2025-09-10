@@ -1,14 +1,13 @@
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 import scrapy
 import tldextract
 from urllib.parse import urljoin
 from scrapy.http import Request
 import csv
 import pathlib
-import warnings
-
-# Suppress deprecation warnings from Scrapy
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 
 class OptionsSpider(scrapy.Spider):
     """

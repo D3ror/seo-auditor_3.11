@@ -1,13 +1,14 @@
-import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
 import scrapy
 import tldextract
 from urllib.parse import urljoin
 from scrapy.http import Request
 import csv
 import pathlib
+import warnings
+
+# Suppress deprecation warnings from Scrapy
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
 
 class OptionsSpider(scrapy.Spider):
     """
@@ -15,6 +16,9 @@ class OptionsSpider(scrapy.Spider):
       scrapy crawl seo -a start_url=https://example.com -O out/results.csv
     """
     name = "seo"
+    custom_settings = {
+        "DOWNLOAD_TIMEOUT": 15,  # seconds before timeout
+    }
 
     def __init__(self, start_url=None, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -28,15 +32,30 @@ class OptionsSpider(scrapy.Spider):
 
     def start_requests(self):
         # Crawl homepage
-        yield Request(self.start_url, callback=self.parse_page, dont_filter=True)
+        yield Request(
+            self.start_url,
+            callback=self.parse_page,
+            errback=self.handle_error,
+            dont_filter=True,
+        )
 
         # Crawl robots.txt (only log, not part of results)
         robots_url = urljoin(self.start_url, "/robots.txt")
-        yield Request(robots_url, callback=self.parse_robots, dont_filter=True)
+        yield Request(
+            robots_url,
+            callback=self.parse_robots,
+            errback=self.handle_error,
+            dont_filter=True,
+        )
 
         # Crawl sitemap.xml
         sitemap_url = urljoin(self.start_url, "/sitemap.xml")
-        yield Request(sitemap_url, callback=self.parse_sitemap, dont_filter=True)
+        yield Request(
+            sitemap_url,
+            callback=self.parse_sitemap,
+            errback=self.handle_error,
+            dont_filter=True,
+        )
 
     def parse_robots(self, response):
         # Do not yield into results anymore, only mark as scraped
@@ -45,7 +64,11 @@ class OptionsSpider(scrapy.Spider):
     def parse_sitemap(self, response):
         for loc in response.css("loc::text").getall():
             self.items_scraped += 1
-            yield response.follow(loc, callback=self.parse_page)
+            yield response.follow(
+                loc,
+                callback=self.parse_page,
+                errback=self.handle_error,
+            )
 
     def parse_page(self, response):
         # Extract SEO signals
@@ -97,7 +120,27 @@ class OptionsSpider(scrapy.Spider):
 
             # Finally follow valid internal links
             if abs_url.startswith("http"):
-                yield response.follow(abs_url, callback=self.parse_page)
+                yield response.follow(
+                    abs_url,
+                    callback=self.parse_page,
+                    errback=self.handle_error,
+                )
+
+    def handle_error(self, failure):
+        """Handle request errors like timeouts or DNS issues"""
+        self.items_scraped += 1
+        request = failure.request
+        yield {
+            "url": request.url,
+            "status": "timeout" if failure.check(scrapy.exceptions.TimeoutError) else "error",
+            "title": "",
+            "h1": "",
+            "canonical": "",
+            "robots_meta": "",
+            "hreflang_count": 0,
+            "duplicate_title": False,
+            "duplicate_h1": False,
+        }
 
     def close(self, reason):
         """

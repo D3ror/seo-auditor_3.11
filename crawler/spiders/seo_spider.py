@@ -64,6 +64,7 @@ class SeoSpider(scrapy.Spider):
         """
         Parse a single page for SEO signals.
         Skip non-HTML resources (images, PDFs, etc.) but log them.
+        Also skip external or disallowed links, but record them in results.
         """
         # --- Check Content-Type ---
         content_type = response.headers.get("Content-Type", b"").decode("utf-8").lower()
@@ -94,7 +95,7 @@ class SeoSpider(scrapy.Spider):
         hreflangs = response.css('link[rel="alternate"][hreflang]')
         hreflang_count = len(hreflangs)
 
-        # Yield structured results
+        # Yield structured results for the current page
         yield {
             "url": response.url,
             "status": response.status,
@@ -103,19 +104,33 @@ class SeoSpider(scrapy.Spider):
             "canonical": canonical,
             "robots_meta": robots_meta,
             "hreflang_count": hreflang_count,
-            "duplicate_title": False,  # will be flagged later in deduplication step
+            "duplicate_title": False,
             "duplicate_h1": False,
             "note": None,
         }
 
-        # Follow internal links (with explicit decision logging)
+        # --- Follow internal links only, log skipped external or forbidden links ---
         for href in response.css("a::attr(href)").getall():
             abs_url = urljoin(response.url, href)
             if abs_url.startswith("http") and self.allowed_domain in abs_url:
+                # Same domain → follow link
                 logger.debug(f"Following link (same domain): {abs_url}")
                 yield response.follow(abs_url, callback=self.parse_page, errback=self.handle_error)
             else:
-                logger.debug(f"Skipping external or disallowed link: {abs_url}")
+                # External or forbidden → do not follow, but log it
+                logger.debug(f"Skipping external/disallowed link: {abs_url}")
+                yield {
+                    "url": abs_url,
+                    "status": "skipped",
+                    "title": "",
+                    "h1": "",
+                    "canonical": "",
+                    "robots_meta": "",
+                    "hreflang_count": 0,
+                    "duplicate_title": False,
+                    "duplicate_h1": False,
+                    "note": "Skipped external or disallowed link (robots.txt or different domain)"
+                }
 
     def handle_error(self, failure):
         """Log failed requests (e.g. timeout)."""
